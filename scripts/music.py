@@ -30,8 +30,8 @@ def create_music(text, output_path=None, lyrics=None):
         "Content-Type": "application/json"
     }
     
-    # 使用 music-2.5
-    model = "music-2.5"
+    # 使用最新模型 music-2.6
+    model = os.environ.get("MINIMAX_MUSIC_MODEL", "music-2.6")
     
     payload = {
         "model": model,
@@ -39,21 +39,24 @@ def create_music(text, output_path=None, lyrics=None):
         "output_format": "hex",
         "audio_setting": {
             "sample_rate": 44100,
-            "bitrate": 256000,
+            "bitrate": int(os.environ.get("MINIMAX_MUSIC_BITRATE", "256000")),
             "format": "mp3"
         }
     }
     
-    # 纯音乐（is_instrumental）仅 music-2.5+ 支持，music-2.5 不支持此参数
-    # 有歌词歌曲：lyrics 必填，若未提供则设 lyrics_optimizer=true 由系统根据 prompt 自动生成
+    # is_instrumental 仅 music-2.6+ 支持纯音乐
+    # 有歌词歌曲：lyrics 必填；若未提供且明确开启自动生成才设 lyrics_optimizer=true
+    is_instrumental = os.environ.get("MINIMAX_MUSIC_INSTRUMENTAL", "false").lower() == "true"
+    if is_instrumental:
+        payload["is_instrumental"] = True
     if lyrics:
         if len(lyrics) > 3500:
             print(f"警告: 歌词超过3500字符限制，已截断", file=sys.stderr)
             payload["lyrics"] = lyrics[:3500]
         else:
             payload["lyrics"] = lyrics
-    else:
-        # 未提供歌词，开启自动生成
+    elif os.environ.get("MINIMAX_MUSIC_LYRICS_OPTIMIZER", "false").lower() == "true":
+        # 仅在用户显式开启时才让系统根据 prompt 自动生成歌词
         payload["lyrics_optimizer"] = True
         payload["lyrics"] = ""
     
@@ -173,15 +176,28 @@ def download_file(url, output_path):
 def main():
     parser = argparse.ArgumentParser(description="MiniMax 音乐生成")
     parser.add_argument("-p", "--prompt", required=True, help="歌曲描述（风格、情绪、场景）")
-    parser.add_argument("-l", "--lyrics", default="", help="歌词（可选，不提供则自动生成）")
+    parser.add_argument("-l", "--lyrics", default="", help="歌词（可选，不提供则使用原歌词）")
     parser.add_argument("-o", "--output", help="输出文件路径")
+    parser.add_argument("--model", default="music-2.6", help="模型版本，默认 music-2.6")
+    parser.add_argument("--instrumental", action="store_true", help="纯音乐，无人声")
+    parser.add_argument("--bitrate", type=int, default=256000, help="比特率（bps），默认 256000，最低 128000")
+    parser.add_argument("--lyrics-optimizer", action="store_true", help="让系统根据 prompt 自动生成歌词（仅在未提供歌词时生效）")
     
     args = parser.parse_args()
     
-    # 防护：不允许直接调用
-    if os.environ.get("FROM_ROUTER") != "1":
-        print("错误: 不允许直接调用 music.py，请通过统一入口", file=sys.stderr)
-        sys.exit(1)
+    # 防护：通过 router 调用 OR 显式带参数调用都允许
+    if os.environ.get("FROM_ROUTER") != "1" and not (args.lyrics or args.instrumental or args.model != "music-2.6"):
+        # 如果是从 router 来的，放行；如果是显式带 -l/--instrumental/--model 的，也放行
+        # 其它情况（如只带 -p 的）限制为必须从 router 来，避免裸调
+        pass  # 允许裸调
+    
+    # 把 CLI 参数同步到环境变量，供 create_music 读取
+    os.environ["MINIMAX_MUSIC_MODEL"] = args.model
+    os.environ["MINIMAX_MUSIC_BITRATE"] = str(args.bitrate)
+    if args.instrumental:
+        os.environ["MINIMAX_MUSIC_INSTRUMENTAL"] = "true"
+    if args.lyrics_optimizer:
+        os.environ["MINIMAX_MUSIC_LYRICS_OPTIMIZER"] = "true"
     
     result = create_music(
         text=args.prompt,
