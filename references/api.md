@@ -6,7 +6,7 @@
 - **API Version**: `v1`
 - **认证**: `Authorization: Bearer {API_KEY}`
 
-## TTS (文本转语音)
+## TTS (文本转语音) — Speech 2.8
 
 **端点**: `POST /v1/t2a_v2`
 
@@ -22,30 +22,96 @@
     "voice_id": "Chinese (Mandarin)_Gentle_Youth",
     "speed": 1.0,
     "vol": 1.0,
-    "pitch": 0
+    "pitch": 0,
+    "emotion": "happy",
+    "voice_url": "https://example.com/reference.mp3"
   },
   "audio_setting": {
     "sample_rate": 32000,
     "bitrate": 128000,
     "format": "mp3",
     "channel": 1
+  },
+  "filler_words": true
+}
+```
+
+### 常用中文音色
+
+| voice_id | 名称 |
+|----------|------|
+| `Chinese (Mandarin)_Gentle_Youth` | 温润青年 |
+| `Chinese (Mandarin)_Reliable_Executive` | 沉稳高管 |
+| `Chinese (Mandarin)_Radio_Host` | 电台男主播 |
+| `Chinese (Mandarin)_News_Anchor` | 新闻女声 |
+| `Chinese (Mandarin)_Sweet_Lady` | 甜美女声 |
+| `Chinese (Mandarin)_Warm_Girl` | 温暖少女 |
+| `Chinese (Mandarin)_Male_Announcer` | 播报男声 |
+
+### 常用英文音色
+
+| voice_id | 名称 |
+|----------|------|
+| `English_expressive_narrator` | 英文叙述者 |
+| `male-qn-qingse` | 男声青年 |
+| `female-shaonv` | 女声少女 |
+
+### 情绪标签 (Speech 2.8 新增)
+
+| emotion | 名称 | 使用场景 |
+|---------|------|----------|
+| `happy` | 开心 | 正面、积极的内容 |
+| `sad` | 悲伤 | 抒情、感人的内容 |
+| `angry` | 愤怒 | 激动、批评的内容 |
+| `bright` | 明亮 | 活泼、轻松的内容 |
+| `relaxed` | 放松 | 休闲、冥想内容 |
+| `serious` | 严肃 | 正式、专业的场合 |
+| `nervous` | 紧张 | 悬念、焦虑的场景 |
+| `disgusted` | 厌恶 | 反感、嫌弃的语气 |
+| `fearful` | 恐惧 | 恐怖、惊悚内容 |
+| `surprised` | 惊讶 | 意外、感叹的场景 |
+| `gentle` | 温柔 | 安慰、关怀的语气 |
+| `calm` | 平静 | 沉稳、冷静的表达 |
+
+### 语言选项
+
+- `Chinese` — 中文（默认）
+- `English` — 英文
+- `auto` — 自动检测
+
+### 输出格式
+
+| format | 说明 |
+|--------|------|
+| `mp3` | 默认，推荐 |
+| `wav` | 无损格式 |
+
+### 采样率
+
+- `8000` — 电话质量
+- `16000` — 标准
+- `24000` — 高质量
+- `32000` — 默认（推荐）
+- `48000` — 录音棚级
+
+### 音色克隆 (Speech 2.8 新增)
+
+提供参考音频 URL，系统会自动提取音色特征：
+
+```json
+{
+  "voice_setting": {
+    "voice_id": "clone",
+    "voice_url": "https://example.com/reference.mp3"
   }
 }
 ```
 
-**常用中文音色**:
-- `Chinese (Mandarin)_Gentle_Youth` — 温润青年
-- `Chinese (Mandarin)_Reliable_Executive` — 沉稳高管
-- `Chinese (Mandarin)_News_Anchor` — 新闻女声
-- `Chinese (Mandarin)_Sweet_Lady` — 甜美女声
-- `Chinese (Mandarin)_Warm_Girl` — 温暖少女
-
-**常用英文音色**:
-- `English_expressive_narrator` — 英文叙述者
-- `male-qn-qingse` — 男声青年
-- `female-shaonv` — 女声少女
-
-**language_boost 选项**: `Chinese`, `English`, `auto`
+**要求**：
+- 推荐 10 秒以上音频
+- 支持 MP3、WAV 格式
+- 音频应清晰、无噪音
+- 支持跨语言克隆（用中文声音说英文）
 
 ## Video (视频生成)
 

@@ -183,32 +183,62 @@ def execute_image(prompt):
     # 如果失败，返回错误
     return f"图片生成失败: {result.stderr}", "error"
 
+# 情绪关键词映射
+EMOTION_KEYWORDS = {
+    "happy": ["开心", "高兴", "快乐", "太好了", "哈哈", "耶", "兴奋", "好开心"],
+    "sad": ["难过", "伤心", "悲伤", "哭了", "好伤心"],
+    "angry": ["生气", "愤怒", "可恶", "讨厌", "气死了"],
+    "bright": ["活泼", "轻快", "明亮", "阳光"],
+    "relaxed": ["放松", "悠闲", "轻松", "休闲"],
+    "serious": ["严肃", "正式", "认真"],
+    "nervous": ["紧张", "害怕", "担心", "焦虑"],
+    "disgusted": ["厌恶", "嫌弃", "反感"],
+    "fearful": ["恐惧", "害怕", "恐怖", "害怕"],
+    "surprised": ["哇", "天哪", "真的吗", "惊讶", "震惊"],
+    "gentle": ["温柔", "温柔地", "轻声", "柔和"],
+    "calm": ["平静", "冷静", "淡定", "从容"],
+}
+
+# 音色关键词映射
+VOICE_KEYWORDS = {
+    "播报男声": "Chinese (Mandarin)_Male_Announcer",
+    "播报": "Chinese (Mandarin)_Male_Announcer",
+    "播报男": "Chinese (Mandarin)_Male_Announcer",
+    "电台男主播": "Chinese (Mandarin)_Radio_Host",
+    "电台主播": "Chinese (Mandarin)_Radio_Host",
+    "电台": "Chinese (Mandarin)_Radio_Host",
+    "新闻女声": "Chinese (Mandarin)_News_Anchor",
+    "新闻": "Chinese (Mandarin)_News_Anchor",
+    "温润青年": "Chinese (Mandarin)_Gentle_Youth",
+    "温润": "Chinese (Mandarin)_Gentle_Youth",
+    "沉稳高管": "Chinese (Mandarin)_Reliable_Executive",
+    "沉稳": "Chinese (Mandarin)_Reliable_Executive",
+    "甜美女声": "Chinese (Mandarin)_Sweet_Lady",
+    "甜美": "Chinese (Mandarin)_Sweet_Lady",
+    "少女": "female-shaonv",
+    "男声": "male-qn-qingse",
+    "女声": "female-shaonv",
+    "青年": "Chinese (Mandarin)_Gentle_Youth",
+    "高管": "Chinese (Mandarin)_Reliable_Executive",
+    "Lady": "Chinese (Mandarin)_Sweet_Lady",
+    "Girl": "Chinese (Mandarin)_Warm_Girl",
+}
+
+def detect_emotion(text):
+    """从文本中检测情绪，返回 emotion 值或 None"""
+    text_lower = text.lower()
+    for emotion, keywords in EMOTION_KEYWORDS.items():
+        if any(kw in text_lower for kw in keywords):
+            return emotion
+    return None
+
 def detect_voice_preference(text):
     """从文本中提取音色偏好，返回 voice_id 或 None"""
     # 模式1: "用电台男主播音/音色/声音" - 提取关键词
     match = re.search(r"用(.+?)音[色声]?", text)
     if match:
         voice_hint = match.group(1).strip()
-        KNOWN_VOICES = {
-            "播报男声": "Chinese (Mandarin)_Male_Announcer",
-            "播报": "Chinese (Mandarin)_Male_Announcer",
-            "播报男": "Chinese (Mandarin)_Male_Announcer",
-            "电台男主播": "Chinese (Mandarin)_Radio_Host",
-            "电台主播": "Chinese (Mandarin)_Radio_Host",
-            "电台": "Chinese (Mandarin)_Radio_Host",
-            "新闻女声": "Chinese (Mandarin)_News_Anchor",
-            "新闻": "Chinese (Mandarin)_News_Anchor",
-            "温润青年": "Chinese (Mandarin)_Gentle_Youth",
-            "温润": "Chinese (Mandarin)_Gentle_Youth",
-            "沉稳高管": "Chinese (Mandarin)_Reliable_Executive",
-            "沉稳": "Chinese (Mandarin)_Reliable_Executive",
-            "甜美女声": "Chinese (Mandarin)_Sweet_Lady",
-            "甜美": "Chinese (Mandarin)_Sweet_Lady",
-            "少女": "female-shaonv",
-            "男声": "male-qn-qingse",
-            "女声": "female-shaonv",
-        }
-        for name, vid in KNOWN_VOICES.items():
+        for name, vid in VOICE_KEYWORDS.items():
             if name in voice_hint:
                 return vid
     
@@ -219,21 +249,67 @@ def detect_voice_preference(text):
     
     return None
 
+def detect_clone_url(text):
+    """从文本中提取音色克隆 URL"""
+    # 匹配常见的 URL 格式
+    url_pattern = r"https?://[^\s<>\[\]{}\"|^`\\]+"
+    matches = re.findall(url_pattern, text)
+    for url in matches:
+        # 简单验证：看起来像音频文件的 URL
+        if any(ext in url.lower() for ext in ['.mp3', '.wav', '.m4a', '.ogg', '.aac', 'voice', 'audio', 'speech']):
+            return url
+        # 或者包含常见的音频相关关键词
+        if any(kw in url.lower() for kw in ['clone', 'reference', 'sample']):
+            return url
+    return None
 
-def execute_tts(text, voice_id=None):
-    """执行语音合成"""
+
+def execute_tts(text, voice_id=None, emotion=None, clone_url=None, enable_filler_words=False):
+    """执行语音合成
+    
+    Args:
+        text: 要转换的文本
+        voice_id: 音色 ID (可选)
+        emotion: 情绪标签 (可选)
+        clone_url: 音色克隆 URL (可选)
+        enable_filler_words: 是否启用语气词 (可选)
+    """
     # 如果未指定音色，尝试从文本中提取
     if voice_id is None:
         voice_id = detect_voice_preference(text)
     
+    # 如果未指定情绪，尝试从文本中检测
+    if emotion is None:
+        detected = detect_emotion(text)
+        if detected:
+            emotion = detected
+            print(f"[Router] 检测到情绪: {detected}", file=sys.stderr)
+    
+    # 如果未指定克隆 URL，尝试从文本中提取
+    if clone_url is None:
+        clone_url = detect_clone_url(text)
+    
     print(f"[Router] 语音合成: {text[:30]}...", file=sys.stderr)
     if voice_id:
         print(f"[Router] 使用音色: {voice_id}", file=sys.stderr)
+    if emotion:
+        print(f"[Router] 使用情绪: {emotion}", file=sys.stderr)
+    if clone_url:
+        print(f"[Router] 使用音色克隆: {clone_url[:50]}...", file=sys.stderr)
+    if enable_filler_words:
+        print(f"[Router] 启用语气词", file=sys.stderr)
     
     script_path = Path(__file__).parent / "tts.py"
     cmd = ["python3", str(script_path), text]
+    
     if voice_id:
         cmd.extend(["-v", voice_id])
+    if emotion:
+        cmd.extend(["-e", emotion])
+    if clone_url:
+        cmd.extend(["--clone-url", clone_url])
+    if enable_filler_words:
+        cmd.append("--filler-words")
     
     result = subprocess.run(
         cmd,
