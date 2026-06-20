@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import time
+import tempfile
 import requests
 import argparse
 from pathlib import Path
@@ -96,7 +97,7 @@ def create_music(text, output_path=None, lyrics=None):
         if audio_hex:
             audio_bytes = bytes.fromhex(audio_hex)
             if output_path is None:
-                output_path = "/tmp/music_output.mp3"
+                output_path = os.path.join(tempfile.gettempdir(), "music_output.mp3")
             with open(output_path, "wb") as f:
                 f.write(audio_bytes)
             print(f"成功: 音乐已保存到 {output_path}", file=sys.stderr)
@@ -144,7 +145,7 @@ def wait_for_completion(task_id, api_key, output_path=None, max_wait=600, poll_i
                         url = outputs[0].get("url")
                         if url:
                             if output_path is None:
-                                output_path = f"/tmp/music_{task_id}.mp3"
+                                output_path = os.path.join(tempfile.gettempdir(), f"music_{task_id}.mp3")
                             download_file(url, output_path)
                             print(f"成功: 音乐已保存到 {output_path}", file=sys.stderr)
                             return output_path
@@ -185,11 +186,14 @@ def main():
     
     args = parser.parse_args()
     
-    # 防护：通过 router 调用 OR 显式带参数调用都允许
-    if os.environ.get("FROM_ROUTER") != "1" and not (args.lyrics or args.instrumental or args.model != "music-2.6"):
-        # 如果是从 router 来的，放行；如果是显式带 -l/--instrumental/--model 的，也放行
-        # 其它情况（如只带 -p 的）限制为必须从 router 来，避免裸调
-        pass  # 允许裸调
+    # 保护机制：只传 -p 的裸调会被拒绝，避免误用。
+    # 绕过方式：带 -l（歌词）/ --instrumental（纯音乐）/ --model <非默认值> 三者之一，或经 router 调用。
+    is_from_router = os.environ.get("FROM_ROUTER") == "1"
+    has_bypass = bool(args.lyrics) or args.instrumental or (args.model != "music-2.6")
+    if not is_from_router and not has_bypass:
+        print("错误: 不允许裸调 music.py（仅 -p 无歌词）。", file=sys.stderr)
+        print("请带 -l <歌词> / --instrumental / --model <非默认> 之一，或经 router 调用。", file=sys.stderr)
+        sys.exit(1)
     
     # 把 CLI 参数同步到环境变量，供 create_music 读取
     os.environ["MINIMAX_MUSIC_MODEL"] = args.model

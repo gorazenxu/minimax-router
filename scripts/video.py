@@ -11,22 +11,26 @@ import sys
 import json
 import time
 import base64
+import tempfile
 import requests
 import argparse
 from pathlib import Path
 
-MINIMAX_API_URL = "https://api.minimax.chat/v1/video_generation"
-MINIMAX_QUERY_URL = "https://api.minimax.chat/v1/query/video_generation"
-MINIMAX_FILE_URL = "https://api.minimax.chat/v1/files/retrieve"
+MINIMAX_API_URL = "https://api.minimaxi.com/v1/video_generation"
+MINIMAX_QUERY_URL = "https://api.minimaxi.com/v1/query/video_generation"
+MINIMAX_FILE_URL = "https://api.minimaxi.com/v1/files/retrieve"
 
 def get_env(key, default=None):
     return os.environ.get(key, default)
 
-def create_video(text, image_url=None, model=None, output_path=None, duration=6, resolution="768P"):
+def create_video(text, image_url=None, last_frame_image=None, subject_ref=None,
+                 model=None, output_path=None, duration=6, resolution="1080P"):
     """
-    创建视频，自动选择模型：
-    - 有图片 → 优先 2.3，失败自动切换 Fast
-    - 无图片 → 使用 2.3（纯文字模式）
+    创建视频，4 种模式（同一端点靠参数区分）：
+    - 有 subject_ref（人脸照）→ S2V-01 主体参考视频
+    - 有 first + last 帧 → MiniMax-Hailuo-02 首尾帧视频
+    - 只有 first 帧 → MiniMax-Hailuo-2.3 / Fast 图生视频
+    - 无图 → MiniMax-Hailuo-2.3 文生视频
     """
     api_key = get_env("MINIMAX_API_KEY")
     
@@ -39,11 +43,22 @@ def create_video(text, image_url=None, model=None, output_path=None, duration=6,
         "Content-Type": "application/json"
     }
     
-    # 自动选择模型：有图片优先 Fast，无图片用 2.3
-    if model is None:
-        if image_url:
+    # 判定模式 + 自动选模型
+    if subject_ref:
+        mode = "subject_reference"
+        if model is None:
+            model = "S2V-01"
+    elif image_url and last_frame_image:
+        mode = "first_last_frame"
+        if model is None:
+            model = "MiniMax-Hailuo-02"
+    elif image_url:
+        mode = "image_to_video"
+        if model is None:
             model = "MiniMax-Hailuo-2.3-Fast"
-        else:
+    else:
+        mode = "text_to_video"
+        if model is None:
             model = "MiniMax-Hailuo-2.3"
     
     payload = {
@@ -53,21 +68,45 @@ def create_video(text, image_url=None, model=None, output_path=None, duration=6,
         "resolution": resolution
     }
     
-    # 处理图片
+    # 模式 ②③：首帧图
     if image_url:
         img_data = download_and_encode_image(image_url)
         if img_data:
             payload["first_frame_image"] = img_data
         else:
-            print("错误: 图片下载失败", file=sys.stderr)
+            print("错误: 首帧图片下载失败", file=sys.stderr)
             sys.exit(1)
     
+    # 模式 ③：尾帧图
+    if last_frame_image:
+        img_data = download_and_encode_image(last_frame_image)
+        if img_data:
+            payload["last_frame_image"] = img_data
+        else:
+            print("错误: 尾帧图片下载失败", file=sys.stderr)
+            sys.exit(1)
+    
+    # 模式 ④：主体参考（人脸）——本地文件转 base64 Data URL，URL 直用
+    if subject_ref:
+        if subject_ref.startswith("http://") or subject_ref.startswith("https://"):
+            img_value = subject_ref
+        else:
+            img_value = download_and_encode_image(subject_ref)
+            if not img_value:
+                print("错误: 主体参考图片读取失败", file=sys.stderr)
+                sys.exit(1)
+        payload["subject_reference"] = [
+            {"type": "character", "image": [img_value]}
+        ]
+    
+    mode_cn = {
+        "subject_reference": "主体参考视频 (S2V-01，保人脸)",
+        "first_last_frame": "首尾帧视频 (Hailuo-02)",
+        "image_to_video": "图生视频",
+        "text_to_video": "文生视频",
+    }[mode]
     print(f"正在创建视频任务...", file=sys.stderr)
-    print(f"模型: {model}", file=sys.stderr)
-    if image_url:
-        print(f"模式: 图生视频", file=sys.stderr)
-    else:
-        print(f"模式: 文生视频", file=sys.stderr)
+    print(f"模型: {model} | 模式: {mode_cn}", file=sys.stderr)
     print(f"描述: {text[:50]}{'...' if len(text) > 50 else ''}", file=sys.stderr)
     print(f"分辨率: {resolution} | 时长: {duration}秒", file=sys.stderr)
     
@@ -83,12 +122,14 @@ def create_video(text, image_url=None, model=None, output_path=None, duration=6,
             # 2.3 配额满，尝试 Fast（如果有图片）
             if "usage limit exceeded" in err_msg and model == "MiniMax-Hailuo-2.3" and image_url:
                 print(f"2.3 配额已用完，尝试 Fast 模型...", file=sys.stderr)
-                return create_video(text, image_url, "MiniMax-Hailuo-2.3-Fast", output_path)
+                return create_video(text, image_url, last_frame_image, subject_ref,
+                                    "MiniMax-Hailuo-2.3-Fast", output_path, duration, resolution)
             
             # Fast 模型不支持纯文字，自动切换 2.3
             if "does not support Text-to-Video" in err_msg and model == "MiniMax-Hailuo-2.3-Fast" and not image_url:
                 print("Fast 模型需要图片，自动切换到 2.3 模型...", file=sys.stderr)
-                return create_video(text, image_url, "MiniMax-Hailuo-2.3", output_path)
+                return create_video(text, image_url, last_frame_image, subject_ref,
+                                    "MiniMax-Hailuo-2.3", output_path, duration, resolution)
             
             print(f"错误: {err_msg}", file=sys.stderr)
             sys.exit(1)
@@ -105,18 +146,31 @@ def create_video(text, image_url=None, model=None, output_path=None, duration=6,
     video_path = wait_for_completion(task_id, api_key, output_path)
     return video_path
 
-def download_and_encode_image(url):
-    """下载图片并转为 base64 data URL"""
+def download_and_encode_image(url_or_path):
+    """将图片转为 base64 data URL。支持：http(s) URL、本地文件路径。"""
     try:
-        response = requests.get(url, timeout=30)
-        if response.status_code == 200 and len(response.content) > 1000:
+        # 本地文件路径
+        if not (url_or_path.startswith("http://") or url_or_path.startswith("https://")):
+            p = Path(url_or_path)
+            if not p.exists():
+                print(f"图片不存在: {url_or_path}", file=sys.stderr)
+                return None
+            data = p.read_bytes()
+            ext = p.suffix.lower().lstrip(".")
+            mime = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png",
+                    "webp": "webp", "gif": "gif"}.get(ext, "jpeg")
+            img_b64 = base64.b64encode(data).decode('utf-8')
+            return f"data:image/{mime};base64,{img_b64}"
+        # URL
+        response = requests.get(url_or_path, timeout=30)
+        if response.status_code == 200 and len(response.content) > 100:
             img_b64 = base64.b64encode(response.content).decode('utf-8')
             content_type = response.headers.get('Content-Type', 'image/jpeg')
             return f"data:{content_type};base64,{img_b64}"
         else:
             print(f"图片下载失败: HTTP {response.status_code}", file=sys.stderr)
     except Exception as e:
-        print(f"图片下载异常: {e}", file=sys.stderr)
+        print(f"图片读取异常: {e}", file=sys.stderr)
     return None
 
 def wait_for_completion(task_id, api_key, output_path=None, max_wait=600, poll_interval=10):
@@ -144,7 +198,7 @@ def wait_for_completion(task_id, api_key, output_path=None, max_wait=600, poll_i
                     if file_id:
                         video_url = get_file_url(file_id, api_key)
                         if video_url:
-                            output_path = output_path or f"/tmp/video_{task_id}.mp4"
+                            output_path = output_path or os.path.join(tempfile.gettempdir(), f"video_{task_id}.mp4")
                             download_file(video_url, output_path)
                             print(f"成功: {output_path}", file=sys.stderr)
                             return output_path
@@ -188,18 +242,22 @@ def download_file(url, output_path):
         raise Exception(f"下载失败: {response.status_code}")
 
 def main():
-    parser = argparse.ArgumentParser(description="MiniMax 视频生成")
+    parser = argparse.ArgumentParser(description="MiniMax 视频生成（4 种模式）")
     parser.add_argument("text", help="视频描述文本")
-    parser.add_argument("-i", "--image", help="起始图片路径或 URL (可选，用于图生视频)")
+    parser.add_argument("-i", "--image", help="首帧图片路径或 URL（图生视频 / 首尾帧）")
+    parser.add_argument("--last-frame", help="尾帧图片路径或 URL（首尾帧视频，需配合 -i）")
+    parser.add_argument("--subject-ref", dest="subject_ref",
+                       help="主体参考人脸照 URL（主体参考视频 S2V-01，保人脸一致）")
     parser.add_argument("-o", "--output", help="输出文件路径")
     parser.add_argument("-m", "--model", default=None,
-                       choices=["MiniMax-Hailuo-2.3", "MiniMax-Hailuo-2.3-Fast"],
-                       help="模型: 2.3 (质量好) / Fast (速度快, 仅图生视频)")
+                       choices=["MiniMax-Hailuo-2.3", "MiniMax-Hailuo-2.3-Fast",
+                                "MiniMax-Hailuo-02", "S2V-01"],
+                       help="模型（默认按模式自动选）")
     parser.add_argument("-d", "--duration", type=int, default=6, choices=[6, 10],
                        help="视频时长: 6秒(默认) 或 10秒")
-    parser.add_argument("-r", "--resolution", default="768P",
-                       choices=["512P", "720P", "768P", "1080P"],
-                       help="分辨率: 512P/720P/768P(默认)/1080P")
+    parser.add_argument("-r", "--resolution", default="1080P",
+                       choices=["720P", "768P", "1080P"],
+                       help="分辨率: 720P/768P/1080P(默认)")
     
     args = parser.parse_args()
     
@@ -211,6 +269,8 @@ def main():
     result = create_video(
         text=args.text,
         image_url=args.image,
+        last_frame_image=args.last_frame,
+        subject_ref=args.subject_ref,
         model=args.model,
         output_path=args.output,
         duration=args.duration,

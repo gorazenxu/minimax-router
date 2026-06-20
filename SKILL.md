@@ -13,7 +13,7 @@ description: "MiniMax 多模态路由技能。当用户说：生成图片/视频
 
 | 意图 | 触发关键词 | 示例 |
 |------|-----------|------|
-| 图片 | 生成图片、画一张、做个图 | "帮我生成一张海边日落图" |
+| 图片 | 生成图片、画一张、做个图、**换背景/换风格/保持人物**、把这张图改成 | "帮我生成一张海边日落图" / "用这张人像换赛博朋克风格" |
 | 视频 | 生成视频、做个视频 | "帮我做一个日出视频" |
 | 视频+配音+音乐 | 视频配音、视频旁白、视频音乐 | "生成视频并配音" |
 | 音乐 | 写首歌、作曲 | "帮我写首摇滚歌曲" |
@@ -28,7 +28,9 @@ description: "MiniMax 多模态路由技能。当用户说：生成图片/视频
 /v <内容>   →  文本/图片转视频
 /m <内容>   →  作曲
 /i <内容>   →  文本转图像
-```
+``` 
+
+图生图（image-to-image）：用户附带参考图（人像/产品照等），或说「保持这个人」「换背景」「改成 XX 风格」时，自动走图生图分支（带 `subject_reference`），保持人物/主体一致性。
 
 ### 3. 链式组合（自然语言）
 
@@ -56,6 +58,14 @@ description: "MiniMax 多模态路由技能。当用户说：生成图片/视频
 ## 调用规范
 
 图片、视频、音乐、语音合成，参数不全时必须追问清楚，确认后再执行。参数齐全时直接执行。
+
+**有配额的 API 严格执行"一次一调"：**
+
+1. 调用一次 → 等待结果返回
+2. 结果到手 → 展示给用户
+3. 用户确认 → 才决定是否继续
+
+> 一次只调一个，等结果再说话。禁止连续调用耗尽配额。
 
 ### 作曲流程（D 方案：智能反推 + 三选一）
 
@@ -132,7 +142,7 @@ description: "MiniMax 多模态路由技能。当用户说：生成图片/视频
   风格：流行抒情 / 钢琴主导 / 男声 / 78 BPM
   歌词：用户自写，508 字
   输出：<路径>.mp3 (256kbps / 44.1kHz)
-  配额：今日已用 0/无限
+  配额：以 `check_quota.py` 实查为准（music 归 general 池，非无限）
 
   回复「生成」执行。
 ```
@@ -200,26 +210,93 @@ description: "MiniMax 多模态路由技能。当用户说：生成图片/视频
 
 ### 图片生成流程
 
+#### 模式判断（router 自动识别）
+
+用户自然语言描述 + 附带图片时，`router.py` 会自动判断走哪种模式，无需手敲 `--ref`：
+
+| 用户提供 | router 识别 | 模式 | 关键参数 |
+|---------|------------|------|----------|
+| 只有文字描述 | 文生图 | **文生图** | prompt |
+| 附带参考图 + 说「保持这个人」「换背景」「换成 XX 风格」「同一个角色」 | 图生图 | **图生图** | prompt + `subject_reference` |
+
+> 图生图与文生图共用 `/v1/image_generation` 端点，区别仅在是否传 `subject_reference`。
+> router 会自动从文本提取宽高比（如「16:9」「竖版」）和数量（如「生成4张」）。
+
+#### 参考图来源处理
+
+- **公开 URL**：直接用
+- **本地文件**：`image.py` 会自动转 base64 Data URL（需 jpg/jpeg/png，≤10MB）
+- **建议**：清晰正脸、光线良好、单人照，效果最好
+
+#### 图生图典型场景
+
+| 场景 | prompt 示例 |
+|------|------------|
+| 保持人物换场景 | 「这个人站在威尼斯海滩，90s 纪实摄影风」 |
+| 保持人物换风格 | 「把这个人改成赛博朋克风格」 |
+| 角色变体（换姿势/服装） | 「同一个角色，穿宇航服，全身照」 |
+| 产品换背景 | 「这个产品放在极简白色背景上」 |
+
+#### 文生图流程
+
 ```
 用户：我要生成图片
 我：请一次性告诉我：
     1. 图片内容/主题
-    2. 比例：①1:1 ②16:9 ③9:16 ④4:3 ⑤3:4
+    2. 比例：①1:1 ②16:9 ③9:16 ④4:3 ⑤3:4（还可选 3:2 / 2:3 / 21:9）
 
 用户：海边日落，②
 → 执行
 ```
 
-参数齐全时（如"帮我画一张海边日落图"）直接执行，不追问。
+#### 图生图流程
+
+```
+用户：用这张人像，改成赛博朋克风格 [附带图片/URL]
+我：收到，图生图模式：
+    - 参考图：<来源>
+    - prompt：把这个人改成赛博朋克风格
+    - 比例：默认跟随参考图，或你要哪个？（1:1 / 3:4 / 9:16 ...）
+确认后 → 执行 image.py --ref <...>
+```
+
+参数齐全时（如"帮我画一张海边日落图"、"用这张图换成水墨风"）直接执行，不追问。
 
 ### 视频生成流程
 
+官方支持 **4 种模式**（同一端点 `/v1/video_generation`），`router.py` 根据用户输入 + 附带图片自动选择：
+
+| 模式 | router 触发条件 | 模型 | 关键参数 |
+|------|----------------|------|----------|
+| ①文生视频 | 只有文字 | `MiniMax-Hailuo-2.3` | prompt |
+| ②图生视频 | 1 张图（首帧），无“保人脸/动起来”语义 | `MiniMax-Hailuo-2.3`/`-Fast` | `first_frame_image` |
+| ③首尾帧视频 | 文本含 2 个图片 URL | `MiniMax-Hailuo-02` | `first_frame_image` + `last_frame_image` |
+| ④主体参考视频 | 1 张人脸照 + 「让动起来」「保人脸」「照片活」 | `S2V-01` | `subject_reference`（保人脸一致） |
+
+#### 默认行为
 ```
 用户：帮我做视频（或直接发来一张图片）
-→ 直接执行，默认 768P / 6秒 / Fast模型
+→ 直接执行，默认 1080P / 6秒
+```
+- 有 1 张图 → 图生视频（首帧）；无图 → 文生视频
+- 分辨率默认 1080P，时长默认 6秒，无需询问
+- 有图时可用 Fast 模型加速；Fast 不支持纯文字
+
+#### 主体参考视频（亮点功能，保人脸一致）
+用户想「让照片里这个人动起来」「保持这个人脸生成视频」时，router 自动走 S2V-01：
+```
+用户：用这张人像照，让他在古巷里走动 [附图]
+→ router 识别为模式④：S2V-01 + subject_reference，保人脸一致
 ```
 
-有图时自动用 Fast 模型；无图时用 2.3 模型。分辨率默认 768P，时长默认 6秒，无需询问。
+#### 首尾帧视频（成长/变场场景）
+用户给两张图（开始+结束）时，router 自动走 MiniMax-Hailuo-02：
+```
+用户：第一张是小时候，第二张是长大后的，生成过渡视频
+→ router 识别为模式③：MiniMax-Hailuo-02 + first_frame_image + last_frame_image
+```
+
+**运镜指令（可选）：** 完整列表见 `references/video-controls.md`，可在 prompt 里加 `[左移][推进]` 等控制镜头。
 
 ### 语音合成流程 (MiniMax Speech 2.8)
 
@@ -250,10 +327,11 @@ description: "MiniMax 多模态路由技能。当用户说：生成图片/视频
     A. 自动（根据内容自动匹配情绪）
     B. 手动选择
 用户：B
-我：为这段内容推荐以下情绪：
-    ① 开心/明亮 — 积极正面的播报
-    ② 平静/严肃 — 沉稳专业的表达
-    ③ 惊讶/兴奋 — 强调重点和亮点
+我：为这段内容推荐以下情绪（2.8 支持 9 种）：
+    ① happy 开心 — 积极正面的播报
+    ② calm 中性/平静 — 沉稳专业的表达（推荐默认）
+    ③ surprised 惊讶 — 强调重点和亮点
+    其他：sad/angry/fearful/disgusted/fluent/whisper
 用户：②
 ↓
 我：自然停顿级别？
@@ -277,20 +355,22 @@ description: "MiniMax 多模态路由技能。当用户说：生成图片/视频
 → 执行 TTS，生成音频文件
 ```
 
-**内容类型 → 音色推荐规则：**
+**内容类型 → 音色推荐规则（调用时用 voice_id）：**
 
-| 内容关键词 | 推荐音色 | 推荐理由 |
-|-----------|---------|---------|
-| 投资/理财/股票/市场/巴菲特/财报 | 电台男主播 | 财经资讯感强，节奏专业 |
-| 商业/企业/管理/职场 | 沉稳高管 | 商务权威感，可信度高 |
-| 新闻/公告/政策/官方 | 新闻女声 | 正式清晰，信任感强 |
-| 故事/小说/散文/随笔 | 温润青年 | 亲切自然，叙述感好 |
-| 娱乐/八卦/轻松/分享 | 甜美女声 | 柔和舒适，轻松愉快 |
-| 教育/培训/课程/教程 | 温润青年 | 亲切教学，易于接受 |
-| 健康/养生/医疗 | 甜美女声 | 温柔关怀，信任感 |
-| 科技/互联网/AI | 电台男主播 | 专业科技感强 |
-| 儿童/童话/绘本 | 甜美女声 | 活泼可爱，贴近孩子 |
-| 诗歌/文学/经典诵读 | 温润青年 | 文艺气质，节奏感好 |
+| 内容关键词 | 推荐名 | voice_id | 推荐理由 |
+|-----------|--------|----------|---------|
+| 投资/理财/股票/市场/巴菲特/财报 | 电台男主播 | `presenter_male` | 财经资讯感强，节奏专业 |
+| 商业/企业/管理/职场 | 沉稳高管 | `male-qn-jingying` | 商务权威感，可信度高 |
+| 新闻/公告/政策/官方 | 新闻女声 | `presenter_female` | 正式清晰，信任感强 |
+| 故事/小说/散文/随笔 | 温润青年 | `male-qn-qingse` | 亲切自然，叙述感好 |
+| 娱乐/八卦/轻松/分享 | 甜美女声 | `female-tianmei` | 柔和舒适，轻松愉快 |
+| 教育/培训/课程/教程 | 温润青年 | `male-qn-qingse` | 亲切教学，易于接受 |
+| 健康/养生/医疗 | 甜美女声 | `female-tianmei` | 温柔关怀，信任感 |
+| 科技/互联网/AI | 电台男主播 | `presenter_male` | 专业科技感强 |
+| 儿童/童话/绘本 | 甜美女声 | `female-tianmei` | 活泼可爱，贴近孩子 |
+| 诗歌/文学/经典诵读 | 温润青年 | `male-qn-qingse` | 文艺气质，节奏感好 |
+
+> ⚠️ voice_id 用国内版短格式（如 `presenter_male`），不要用 `Chinese (Mandarin)_xxx` 长格式。完整列表见 `references/voices.md`。
 
 如果内容涵盖多个类型，选择最突出的一个作为主要推荐理由。
 
@@ -346,31 +426,115 @@ description: "MiniMax 多模态路由技能。当用户说：生成图片/视频
 
 ## 模型对应
 
-| 功能 | 模型 | Token Plan 限额 (Max) |
-|------|------|----------------------|
-| 语音 TTS | speech-2.8-hd | 11,000 字/天 |
-| 图片 Image | image-01 | 120 张/天 |
-| 视频 Video | MiniMax-Hailuo-2.3 / Fast | 2 个/天 |
-| 音乐 Music | **music-2.6** | **无限制**（最新模型，推荐默认） |
-| 音乐 Music (旧) | music-2.5 | 4 首/天（仅作 fallback） |
+| 功能 | 模型 | 计费池 |
+|------|------|----------|
+| 文本对话 | MiniMax-M 系列（M2.7 等） | general |
+| 语音 TTS | speech-2.8-hd | general |
+| 图片 Image（文生图 / 图生图） | image-01（另有 image-01-live，支持 style 画风） | general |
+| 音乐 Music | **music-2.6**（推荐默认） | general |
+| 音乐 Music (旧) | music-2.5（仅 fallback） | general |
+| 视频 Video | MiniMax-Hailuo-2.3 / Fast | **video**（独立按个数计） |
+
+> **图生图 = 文生图共用 image-01**，传 `subject_reference` 即可，不额外计费类型。
+
+## Token Plan 配额机制（重要，原限额数字已作废）
+
+⚠️ 此前 SKILL 里写的固定数字（如「image 120 张/天」「视频 2 个/天」「music 无限制」）**全部作废**——那是旧 Coding Plan 的口径，现已升级为 **Token Plan**。
+
+### 现行机制
+
+- 订阅产品为 **Token Plan**，分 **Plus ¥49 / Max ¥119 / Ultra ¥469** 三档，额度逐档递增
+- 额度按 **两个窗口** 控制：**5 小时固定窗口** + **周窗口**，重置后恢复
+- 资源分两个计费池：
+  - **general 池**：文本 / 语音 / 图像 / 音乐，按「按量计费价格」折算扣减额度（以剩余百分比衡量）
+  - **video 池**：视频，**按个数**计，独立配额
+- 周窗口有加成（实测 `weekly_boost_permille = 1500`，即 1.5×）
+- 官方不在文档公开固定数字，以控制台进度条 / `check_quota.py` 实时查询为准
+
+### Max 档实测参考（总额度，剩余以 `check_quota.py` 实查为准）
+
+| 池 | 5 小时窗口总额度 | 周窗口总额度 |
+|------|-----------|----------|
+| general | 按量折算（剩余百分比制，文本+语音+图+乐共享） | 同上，带 1.5× 周加成 |
+| video | 3 个 | 21 个 |
+
+> 每次生成会扣减额度，**剩余**多少必须跑 `check_quota.py` 实查（字段名 `usage_count` 实为“剩余可用”，非“已用”）。
+
+### 查询真实配额
+
+```bash
+python scripts/check_quota.py
+```
+
+返回每个池的「当前窗口已用 / 总量」与「本周已用 / 总量」。**生成前先查，避免打到上限。**
 
 ## 视频模型选择（自动判断）
 
-| 你提供的内容 | 调用的模型 | 说明 |
-|-------------|-----------|------|
-| 只有文字描述 | MiniMax-Hailuo-2.3 | 文字生成视频 |
-| 提供了图片 | MiniMax-Hailuo-2.3-Fast | 图生视频，速度更快 |
+| 你提供的内容 | 调用的模型 | 模式 | 说明 |
+|-------------|-----------|------|------|
+| 只有文字描述 | `MiniMax-Hailuo-2.3` | 文生视频 | 文字生成视频 |
+| 1 张图片（首帧） | `MiniMax-Hailuo-2.3-Fast` | 图生视频 | 图生视频，Fast 更快 |
+| 2 张图片（首+尾帧） | `MiniMax-Hailuo-02` | 首尾帧视频 | 首尾帧过渡生成 |
+| 1 张人脸照 + 文字 | `S2V-01` | 主体参考视频 | 保人脸一致 |
 
-规则：有图 → Fast；无图 → 2.3。Fast 模型不支持纯文字生成视频。
+规则：Fast 仅图生视频，不支持纯文字；首尾帧用 Hailuo-02；保人脸用 S2V-01。
 
 ## 脚本
 
-- `router.py` — 自动路由主脚本
-- `tts.py` — 语音合成 (v2.0，支持情绪/克隆/语气词)
-- `image.py` — 图像生成
-- `video.py` — 视频生成
-- `music.py` — 音乐生成（默认 `music-2.6`，支持 `--model / --instrumental / --lyrics-optimizer`）
-- `video_with_audio.py` — 视频+配音+音乐合并
+- `scripts/router.py` — 自动路由主脚本（智能识别文生/图生图、文生/图生/首尾帧/主体参考视频、比例/数量）
+- `scripts/tts.py` — 语音合成 (v2.0，支持情绪/克隆/语气词)
+- `scripts/image.py` — 图像生成（文生图 + **图生图**）
+- `scripts/video.py` — 视频生成
+- `scripts/music.py` — 音乐生成（默认 `music-2.6`，支持 `--model / --instrumental / --lyrics-optimizer`）
+- `scripts/video_with_audio.py` — 视频+配音+音乐合并
+- `scripts/check_quota.py` — 查询当前账户各模型配额使用情况
+
+### image.py CLI 用法
+
+```bash
+# 文生图
+python scripts/image.py "海边日落" -o out.png -s 16:9 -n 1
+
+# 图生图（参考图为公开 URL，保持人物一致性）
+python scripts/image.py "女孩在图书馆窗边远眺" --ref https://example.com/face.jpg -o out.png -s 3:4
+
+# 图生图（参考图为本地文件，自动转 base64 Data URL）
+python scripts/image.py "赛博朋克风格" --ref ./photo.png -o out.png
+
+# 可选：开启 prompt 优化 / 固定 seed 复现
+python scripts/image.py "..." --optimize --seed 42 -o out.png
+```
+
+**关键参数：**
+- `-s/--size` 宽高比：`1:1 16:9 9:16 4:3 3:4 3:2 2:3 21:9`
+- `-n/--num` 生成数量 1-9
+- `--ref` 图生图参考图（URL 或本地路径），**传入即启用图生图**
+- `--optimize` 开启 prompt 自动优化（默认关）
+- `--seed` 随机种子，复现用
+
+### video.py CLI 用法
+
+```bash
+# ①文生视频
+python scripts/video.py "日出延时" -o out.mp4 -r 1080P -d 6
+
+# ②图生视频（首帧）
+python scripts/video.py "镜头推进" -i https://.../start.png -o out.mp4
+
+# ③首尾帧视频（成长/变场）
+python scripts/video.py "小女孩长大" -i start.jpeg --last-frame end.jpeg -o out.mp4
+
+# ④主体参考视频（保人脸一致）
+python scripts/video.py "在古巷里走动" --subject-ref https://.../face.png -o out.mp4
+```
+
+**关键参数：**
+- `-i/--image` 首帧图（URL 或本地路径）
+- `--last-frame` 尾帧图（配合 -i 走首尾帧模式，模型 Hailuo-02）
+- `--subject-ref` 人脸照 URL（走 S2V-01 主体参考模式，保人脸）
+- `-m/--model` 不填则按模式自动选
+- `-d/--duration` 6 或 10 秒
+- `-r/--resolution` 720P/768P/1080P（默认 1080P）
 
 ### music.py CLI 用法
 
@@ -393,6 +557,27 @@ python music.py -p "Mandopop, 友情, 毕业" --lyrics-optimizer -o out.mp3
 **保护机制：** 默认会拒绝"只传 -p 没歌词也没其他参数"的裸调，避免误用。
 **绕过方式：** 带 `-l`（歌词）/ `--instrumental`（纯音乐）/ `--model <非默认值>` 三个之一即可直接调用。
 
+## 配置
+
+环境变量：
+
+```
+MINIMAX_API_KEY=<your-api-key>
+```
+
+API Key 位置：`~/.openclaw/openclaw.json` → `providers.minimax.apiKey`
+
+国内版（`api.minimaxi.com`）需要在 URL 末尾拼接 `Groupid=<group_id>`（账户管理 → 基础信息 → 接口密钥 页面查询）。
+
 ## API 参考
 
 详细 API 参数请查看 `references/api.md`。
+
+- HTTP 同步：<https://platform.minimaxi.com/docs/api-reference/speech-t2a-http>
+- WebSocket 流式：<https://platform.minimaxi.com/docs/api-reference/speech-t2a-websocket>
+- 异步长文本：`speech-t2a-async-create`（侧栏入口，>10000 字符时使用）
+- 完整 voice_id 列表：见 `references/voices.md`
+- 视频运镜指令：见 `references/video-controls.md`
+- 异步长文本 TTS 详细文档：见 `references/async-tts.md`（>10000 字符 / 批量合成时使用）
+- 音色克隆详细文档：见 `references/voice-cloning.md`（用户用自己的声音时使用）
+- 错误码速查表：见 `references/error-codes.md`（调试报错时使用）

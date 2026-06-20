@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 
 def get_env(key, default=None):
@@ -36,9 +37,9 @@ def generate_video_with_audio(video_desc, narration_text, music_desc=None, image
     生成视频 + 配音 + 背景音乐，合并输出
     """
     if output_path is None:
-        output_path = "/tmp/final_video.mp4"
+        output_path = os.path.join(tempfile.gettempdir(), "final_video.mp4")
     
-    tmp_dir = "/tmp/video_wa"
+    tmp_dir = os.path.join(tempfile.gettempdir(), "video_wa")
     os.makedirs(tmp_dir, exist_ok=True)
     
     video_path = f"{tmp_dir}/video.mp4"

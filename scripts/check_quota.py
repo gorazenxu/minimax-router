@@ -51,42 +51,61 @@ def main():
     
     print()
     print("=" * 65)
-    print("📊 Token Plan Max 套餐剩余（真实数据）")
+    print("📊 Token Plan 配额剩余（实时数据）")
     print("=" * 65)
     print()
-    print(f"{'模型':<30} {'当前已用':<18} {'本周已用':<18}")
+    print(f"{'模型池':<30} {'当前窗口剩余':<20} {'本周剩余':<20}")
     print("-" * 65)
     
-    # 模型名称映射（API名 -> 中文名）
+    # API 返回的是聚合后的池名（general / video 等），不是具体模型名
     name_map = {
-        "MiniMax-M*": "文字（MiniMax-M*）",
-        "speech-hd": "语音（speech-hd）",
-        "MiniMax-Hailuo-2.3-Fast-6s-768p": "视频 Fast（2.3-Fast）",
-        "MiniMax-Hailuo-2.3-6s-768p": "视频（2.3）",
-        "music-2.5": "音乐（music-2.5）",
-        "image-01": "图片（image-01）",
+        "general": "general 池（文本+语音+图+乐，按量折算）",
+        "video": "video 池（视频，按个数计）",
     }
     
     for item in data:
         model = item.get("model_name", "")
         name = name_map.get(model, model)
         
+        # ⚠️ 字段语义（易踩坑）：
+        #   current_interval_total_count      = 当前窗口总额度
+        #   current_interval_usage_count      = 当前窗口【剩余可用】数（字段名误导，非“已用”）
+        #   current_interval_remaining_percent= 当前窗口剩余百分比
+        # 验证：video total=3 usage=3 remaining%=100 → 剩余 3/3=100%，说明 usage 是“剩余”而非“已用”。
         curr_total = item.get("current_interval_total_count", 0)
-        curr_usage = item.get("current_interval_usage_count", 0)
-        curr_remain = curr_total - curr_usage
+        curr_remain = item.get("current_interval_usage_count", 0)
         
         weekly_total = item.get("current_weekly_total_count", 0)
-        weekly_usage = item.get("current_weekly_usage_count", 0)
-        weekly_remain = weekly_total - weekly_usage
+        weekly_remain = item.get("current_weekly_usage_count", 0)
         
-        curr_str = f"{curr_total - curr_usage:,} / {curr_total:,}"
-        weekly_str = f"{weekly_total - weekly_usage:,} / {weekly_total:,}"
+        curr_pct = item.get("current_interval_remaining_percent")
+        weekly_pct = item.get("current_weekly_remaining_percent")
         
-        flag = " !" if curr_usage == 0 else ""
+        # general 池按百分比管理（total 为 0），显示剩余百分比；
+        # video 池按个数计，显示 剩余/总量。
+        if curr_total > 0:
+            curr_str = f"剩余 {curr_remain} / {curr_total} 个"
+        elif curr_pct is not None:
+            curr_str = f"剩余 {curr_pct}%"
+        else:
+            curr_str = "-"
         
-        print(f"{name:<30} {curr_str:<18} {weekly_str:<18}{flag}")
+        if weekly_total > 0:
+            weekly_str = f"剩余 {weekly_remain} / {weekly_total} 个"
+        elif weekly_pct is not None:
+            weekly_str = f"剩余 {weekly_pct}%"
+        else:
+            weekly_str = "-"
+        
+        # 已用尽判断：剩余为 0
+        exhausted = (curr_total > 0 and curr_remain == 0) or (curr_total == 0 and curr_pct is not None and curr_pct == 0)
+        flag = " ⚠️已用尽" if exhausted else ""
+        
+        print(f"{name:<30} {curr_str:<20} {weekly_str:<20}{flag}")
     
     print("-" * 65)
+    print("注：general 池按按量计费价格折算扣额度（百分比）；video 池按个数计。")
+    print("    窗口：5 小时固定窗口 + 周窗口（周窗口含 1.5× 加成）。")
 
 if __name__ == "__main__":
     main()

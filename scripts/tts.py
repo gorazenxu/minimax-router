@@ -7,9 +7,9 @@ MiniMax TTS (文本转语音) 脚本 v2.0
   python tts.py "要转换的文本" [output_path]
 
   # 指定音色
-  python tts.py "文本" -v "Chinese (Mandarin)_Gentle_Youth"
+  python tts.py "文本" -v "male-qn-qingse"
 
-  # 指定情绪 (happy/sad/angry/bright/relaxed/serious)
+  # 指定情绪 (happy/sad/angry/fearful/disgusted/surprised/calm/fluent/whisper)
   python tts.py "文本" -e happy
 
   # 音色克隆 (提供参考音频 URL)
@@ -34,40 +34,37 @@ import re
 from pathlib import Path
 from typing import Optional, List
 
-MINIMAX_API_URL = "https://api.minimax.chat/v1/t2a_v2"
+MINIMAX_API_URL = "https://api.minimaxi.com/v1/t2a_v2"
 
-# 中文音色选项
+# 中文音色选项（国内版 api.minimaxi.com 用短格式 voice_id，与 references/voices.md 一致）
+# ⚠️ 不要用 "Chinese (Mandarin)_xxx" 长格式，那是国际版 api.minimax.io 的格式，国内版会报错。
 VOICE_OPTIONS_CN = {
-    "gentle_youth": ("Chinese (Mandarin)_Gentle_Youth", "温润青年"),
-    "reliable_executive": ("Chinese (Mandarin)_Reliable_Executive", "沉稳高管"),
-    "radio_host": ("Chinese (Mandarin)_Radio_Host", "电台男主播"),
-    "news_anchor": ("Chinese (Mandarin)_News_Anchor", "新闻女声"),
-    "sweet_lady": ("Chinese (Mandarin)_Sweet_Lady", "甜美女声"),
-    "warm_girl": ("Chinese (Mandarin)_Warm_Girl", "温暖少女"),
-    "male_announcer": ("Chinese (Mandarin)_Male_Announcer", "播报男声"),
+    "gentle_youth": ("male-qn-qingse", "温润青年"),
+    "reliable_executive": ("male-qn-jingying", "沉稳高管"),
+    "radio_host": ("presenter_male", "电台男主播"),
+    "news_anchor": ("presenter_female", "新闻女声"),
+    "sweet_lady": ("female-tianmei", "甜美女声"),
+    "warm_girl": ("female-shaonv", "温暖少女"),
+    "male_announcer": ("presenter_male", "播报男声"),
 }
 
-# 英文音色选项
+# 英文音色选项（国内版可用，短格式）
 VOICE_OPTIONS_EN = {
-    "expressive_narrator": ("English_expressive_narrator", "英文叙述者"),
     "male_youth": ("male-qn-qingse", "男声青年"),
     "female_girl": ("female-shaonv", "女声少女"),
 }
 
-# 情绪选项
+# 情绪选项（Speech 2.8 官方支持 9 种）
 EMOTION_OPTIONS = {
     "happy": "开心",
     "sad": "悲伤",
     "angry": "愤怒",
-    "bright": "明亮",
-    "relaxed": "放松",
-    "serious": "严肃",
-    "nervous": "紧张",
+    "fearful": "害怕",
     "disgusted": "厌恶",
-    "fearful": "恐惧",
     "surprised": "惊讶",
-    "gentle": "温柔",
-    "calm": "平静",
+    "calm": "中性/平静",
+    "fluent": "生动",
+    "whisper": "低语",
 }
 
 def get_env(key, default=None):
@@ -101,10 +98,15 @@ def detect_emotion(text: str) -> Optional[str]:
     if any(w in text_lower for w in surprise_words):
         return "surprised"
     
-    # 紧张情绪
-    nervous_words = ["紧张", "害怕", "担心", "nervous", "worried"]
-    if any(w in text_lower for w in nervous_words):
-        return "nervous"
+    # 害怕/紧张情绪 → fearful（2.8 有效值，nervous 已废弃）
+    fearful_words = ["紧张", "害怕", "担心", "恐惧", "nervous", "worried", "fearful", "scared"]
+    if any(w in text_lower for w in fearful_words):
+        return "fearful"
+    
+    # 厌恶情绪 → disgusted
+    disgusted_words = ["恶心", "厌恶", "讨厌透", "disgusted", "gross"]
+    if any(w in text_lower for w in disgusted_words):
+        return "disgusted"
     
     return None
 
@@ -156,9 +158,9 @@ def text_to_speech(
     if language is None:
         language = "Chinese" if is_chinese(text) else "English"
     
-    # 自动选择音色
+    # 自动选择音色（国内版短格式 voice_id）
     if voice_id is None and clone_url is None and clone_file is None:
-        voice_id = "Chinese (Mandarin)_Gentle_Youth" if language == "Chinese" else "English_expressive_narrator"
+        voice_id = "male-qn-qingse" if language == "Chinese" else "male-qn-qingse"
     
     # 构建请求体
     payload = {
@@ -256,12 +258,7 @@ def text_to_speech(
         sys.exit(1)
 
 def list_voices(voice_type: str = "all"):
-    """列出可用的音色"""
-    api_key = get_env("MINIMAX_API_KEY")
-    if not api_key:
-        print("错误: 未设置 MINIMAX_API_KEY 环境变量", file=sys.stderr)
-        return
-    
+    """列出可用的音色（本地字典，无需 API Key）"""
     print("=" * 50)
     print("MiniMax Speech 2.8 可用音色列表")
     print("=" * 50)
@@ -306,7 +303,7 @@ def main():
   python tts.py "你好，欢迎使用 MiniMax 语音合成"
 
   # 选择音色
-  python tts.py "你好" -v "Chinese (Mandarin)_News_Anchor"
+  python tts.py "你好" -v "presenter_female"
 
   # 带情绪
   python tts.py "太开心了！" -e happy
@@ -331,7 +328,7 @@ def main():
     parser.add_argument("-p", "--pitch", type=float, default=0.0, help="音高 (-500 to 500, 默认: 0)")
     parser.add_argument("--vol", type=float, default=1.0, help="音量 (0-2.0, 默认: 1.0)")
     parser.add_argument("-l", "--lang", help="语言 (Chinese/English/auto, 默认: 自动检测)")
-    parser.add_argument("-e", "--emotion", help="情绪标签 (happy/sad/angry/bright/relaxed/serious/nervous/disgusted/fearful/surprised/gentle/calm)")
+    parser.add_argument("-e", "--emotion", help="情绪标签 (happy/sad/angry/fearful/disgusted/surprised/calm/fluent/whisper)")
     parser.add_argument("--clone-url", help="音色克隆参考音频 URL (10秒以上)")
     parser.add_argument("--clone-file", help="音色克隆参考音频文件路径")
     parser.add_argument("--filler-words", action="store_true", help="启用语气词 (嗯/呃/哎等自然停顿)")
